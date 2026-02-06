@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 import shutil
 import subprocess
 import tempfile
@@ -78,7 +80,7 @@ def export_diagram(
             except ExportError:
                 # Local failed (e.g., missing Chrome for Puppeteer), try online
                 pass
-        return _export_online(mermaid_code, output_path, format, timeout)
+        return _export_online(mermaid_code, output_path, format, timeout, background)
     elif method == ExportMethod.LOCAL:
         if not _mmdc_available():
             raise ExportError(
@@ -88,7 +90,7 @@ def export_diagram(
             mermaid_code, output_path, format, background, theme, scale
         )
     else:  # ONLINE
-        return _export_online(mermaid_code, output_path, format, timeout)
+        return _export_online(mermaid_code, output_path, format, timeout, background)
 
 
 def _mmdc_available() -> bool:
@@ -151,11 +153,44 @@ def _export_local(
         Path(tmp_input_path).unlink(missing_ok=True)
 
 
+def _get_imagemagick_command() -> str | None:
+    """Get the ImageMagick command (magick for v7, convert for v6)."""
+    if shutil.which("magick"):
+        return "magick"
+    if shutil.which("convert"):
+        return "convert"
+    return None
+
+
+def _add_background_to_png(png_path: Path, background: str) -> None:
+    """Add solid background to PNG using ImageMagick."""
+    cmd = _get_imagemagick_command()
+    if not cmd:
+        return  # Silently skip if not available
+
+    try:
+        # Use ImageMagick to flatten with background color
+        args = [cmd]
+        if cmd == "magick":
+            args.append("convert")  # magick convert for IMv7
+        args.extend([
+            str(png_path),
+            "-background", background,
+            "-flatten",
+            str(png_path),
+        ])
+        subprocess.run(args, capture_output=True, timeout=30)
+        # Ignore errors - just keep original if it fails
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+
 def _export_online(
     mermaid_code: str,
     output_path: Path,
     format: ExportFormat,
     timeout: int,
+    background: str = "white",
 ) -> Path:
     """Export using kroki.io API."""
     url = f"https://kroki.io/mermaid/{format.value}"
@@ -171,7 +206,16 @@ def _export_online(
         with urlopen(request, timeout=timeout) as response:
             content = response.read()
 
+        # For SVG, add background rectangle
+        if format == ExportFormat.SVG:
+            content = _add_background_to_svg(content, background)
+
         output_path.write_bytes(content)
+
+        # For PNG, add background using ImageMagick (if available)
+        if format == ExportFormat.PNG:
+            _add_background_to_png(output_path, background)
+
         return output_path
 
     except HTTPError as e:
@@ -199,3 +243,39 @@ def check_dependencies() -> dict[str, bool]:
         "mmdc (mermaid-cli)": _mmdc_available(),
         "kroki.io (online)": True,  # Always available if internet works
     }
+
+
+def _add_background_to_svg(svg_content: bytes, background: str) -> bytes:
+    """Add a background rectangle to an SVG."""
+    svg_str = svg_content.decode("utf-8")
+
+    # Parse viewBox or width/height to get dimensions
+    viewbox_match = re.search(r'viewBox="([^"]+)"', svg_str)
+    width_match = re.search(r'width="([^"]+)"', svg_str)
+    height_match = re.search(r'height="([^"]+)"', svg_str)
+
+    if viewbox_match:
+        parts = viewbox_match.group(1).split()
+        if len(parts) == 4:
+            x, y, w, h = parts
+            bg_rect = f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{background}"/>'
+    elif width_match and height_match:
+        w = width_match.group(1)
+        h = height_match.group(1)
+        bg_rect = f'<rect x="0" y="0" width="{w}" height="{h}" fill="{background}"/>'
+    else:
+        # Fallback: large rectangle
+        bg_rect = f'<rect x="0" y="0" width="100%" height="100%" fill="{background}"/>'
+
+    # Insert background rect right after the opening <svg> tag (and any <style> or <defs>)
+    # Find the first <g> tag and insert before it
+    g_match = re.search(r"(<g[^>]*>)", svg_str)
+    if g_match:
+        insert_pos = g_match.start()
+        svg_str = svg_str[:insert_pos] + bg_rect + svg_str[insert_pos:]
+    else:
+        # Fallback: insert after <svg ...>
+        svg_tag_end = svg_str.find(">") + 1
+        svg_str = svg_str[:svg_tag_end] + bg_rect + svg_str[svg_tag_end:]
+
+    return svg_str.encode("utf-8")
