@@ -1,6 +1,6 @@
 # pg2mermaid
 
-Convert PostgreSQL dump files to Mermaid ER diagrams.
+Convert PostgreSQL dump files to Mermaid ER diagrams, with optional export to SVG, PNG, or PDF.
 
 ## Installation
 
@@ -20,6 +20,9 @@ pg2mermaid schema.sql
 
 # Save to file
 pg2mermaid schema.sql -o diagram.md
+
+# Export directly to SVG
+pg2mermaid schema.sql --svg -o diagram.svg
 
 # Pipe from pg_dump
 pg_dump mydb --schema-only | pg2mermaid -o diagram.md
@@ -50,6 +53,15 @@ Options:
   --title TEXT           Add a title to the diagram
   -v, --verbose          Show parsing statistics
   --help                 Show help message
+
+Image Export:
+  --svg                  Export as SVG image
+  --png                  Export as PNG image
+  --pdf                  Export as PDF document
+  --export-method TYPE   auto (default), local, or online
+  --theme THEME          default, dark, forest, or neutral
+  --background COLOR     Background color for PNG (default: white)
+  --scale N              Scale factor for PNG (default: 2)
 ```
 
 ## Examples
@@ -74,6 +86,23 @@ erDiagram
         text title
     }
     users ||--o{ posts : "user_id"
+```
+
+### Export to SVG
+
+```bash
+# Using online API (no installation required)
+pg2mermaid schema.sql --svg -o diagram.svg
+
+# Using local mermaid-cli (if installed)
+pg2mermaid schema.sql --svg -o diagram.svg --export-method local
+```
+
+### Export to PNG
+
+```bash
+# High-resolution PNG with dark theme
+pg2mermaid schema.sql --png -o diagram.png --theme dark --scale 3
 ```
 
 ### Filter by Schema
@@ -122,6 +151,34 @@ Wrap diagram in markdown code block:
 pg2mermaid dump.sql --format markdown -o schema.md
 ```
 
+## Image Export Methods
+
+pg2mermaid supports two methods for exporting to image formats:
+
+### Online (kroki.io) - Default
+
+Uses the free [kroki.io](https://kroki.io) API. No installation required, works out of the box.
+
+```bash
+pg2mermaid schema.sql --svg -o diagram.svg --export-method online
+```
+
+### Local (mermaid-cli)
+
+Uses the official Mermaid CLI tool. Requires Node.js installation but works offline.
+
+```bash
+# Install mermaid-cli
+npm install -g @mermaid-js/mermaid-cli
+
+# Use local rendering
+pg2mermaid schema.sql --svg -o diagram.svg --export-method local
+```
+
+### Auto (Default Behavior)
+
+By default (`--export-method auto`), pg2mermaid tries local mermaid-cli first and falls back to the online API if not available.
+
 ## Viewing Diagrams
 
 The generated Mermaid diagrams can be viewed in:
@@ -134,11 +191,12 @@ The generated Mermaid diagrams can be viewed in:
 ## Features
 
 - **Zero dependencies**: Pure Python, no external packages required
+- **Image export**: SVG, PNG, PDF via online API or local mermaid-cli
 - **Full PostgreSQL support**: Handles all standard data types
 - **Smart filtering**: Include/exclude by schema, table name, or pattern
 - **Scalable output**: Compact mode and column limits for large schemas
 - **Relationship detection**: Parses both inline and ALTER TABLE foreign keys
-- **Multiple formats**: Mermaid, Markdown-wrapped, or JSON
+- **Multiple formats**: Mermaid, Markdown-wrapped, JSON, SVG, PNG, PDF
 
 ## Supported SQL Features
 
@@ -153,6 +211,7 @@ The generated Mermaid diagrams can be viewed in:
 ## Requirements
 
 - Python 3.10 or higher
+- For local image export: Node.js and `@mermaid-js/mermaid-cli`
 
 ## License
 

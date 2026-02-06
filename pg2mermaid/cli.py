@@ -51,10 +51,20 @@ Examples:
   pg2mermaid dump.sql --compact            Show only PK/FK columns
   pg2mermaid dump.sql --connected-only     Only show tables with relationships
 
+Export to image:
+  pg2mermaid schema.sql --svg -o diagram.svg    Export as SVG
+  pg2mermaid schema.sql --png -o diagram.png    Export as PNG
+  pg2mermaid schema.sql --pdf -o diagram.pdf    Export as PDF
+
 Output modes:
   --compact    Show only primary key and foreign key columns
   --normal     Show all columns with simplified types (default)
   --full       Show all columns with full type information
+
+Export methods:
+  --export-method auto     Try local mermaid-cli, fall back to online (default)
+  --export-method local    Use mermaid-cli (requires: npm i -g @mermaid-js/mermaid-cli)
+  --export-method online   Use kroki.io API (no installation required)
 """,
     )
 
@@ -109,8 +119,56 @@ Output modes:
         help="Output format (default: mermaid)",
     )
 
+    # Image export options
+    export_group = parser.add_argument_group("image export")
+    export_format = export_group.add_mutually_exclusive_group()
+    export_format.add_argument(
+        "--svg",
+        action="store_true",
+        help="Export as SVG image",
+    )
+    export_format.add_argument(
+        "--png",
+        action="store_true",
+        help="Export as PNG image",
+    )
+    export_format.add_argument(
+        "--pdf",
+        action="store_true",
+        help="Export as PDF document",
+    )
+    export_group.add_argument(
+        "--export-method",
+        type=str,
+        choices=["auto", "local", "online"],
+        default="auto",
+        help="Export method: auto, local (mermaid-cli), or online (kroki.io)",
+    )
+    export_group.add_argument(
+        "--theme",
+        type=str,
+        choices=["default", "dark", "forest", "neutral"],
+        default="default",
+        help="Mermaid theme for image export (default: default)",
+    )
+    export_group.add_argument(
+        "--background",
+        type=str,
+        default="white",
+        metavar="COLOR",
+        help="Background color for PNG export (default: white)",
+    )
+    export_group.add_argument(
+        "--scale",
+        type=int,
+        default=2,
+        metavar="N",
+        help="Scale factor for PNG export (default: 2)",
+    )
+
     # Filtering
-    parser.add_argument(
+    filter_group = parser.add_argument_group("filtering")
+    filter_group.add_argument(
         "--schema",
         "-s",
         action="append",
@@ -118,14 +176,14 @@ Output modes:
         metavar="NAME",
         help="Include only these schemas (can be repeated)",
     )
-    parser.add_argument(
+    filter_group.add_argument(
         "--exclude-schema",
         action="append",
         dest="exclude_schemas",
         metavar="NAME",
         help="Exclude these schemas (can be repeated)",
     )
-    parser.add_argument(
+    filter_group.add_argument(
         "--table",
         "-t",
         action="append",
@@ -133,7 +191,7 @@ Output modes:
         metavar="PATTERN",
         help="Include only tables matching pattern (supports * wildcard)",
     )
-    parser.add_argument(
+    filter_group.add_argument(
         "--exclude",
         "-e",
         action="append",
@@ -141,7 +199,7 @@ Output modes:
         metavar="PATTERN",
         help="Exclude tables matching pattern (supports * wildcard)",
     )
-    parser.add_argument(
+    filter_group.add_argument(
         "--connected-only",
         "-c",
         action="store_true",
@@ -149,25 +207,26 @@ Output modes:
     )
 
     # Layout options
-    parser.add_argument(
+    layout_group = parser.add_argument_group("layout")
+    layout_group.add_argument(
         "--max-columns",
         type=int,
         default=20,
         metavar="N",
         help="Max columns per table, 0 for unlimited (default: 20)",
     )
-    parser.add_argument(
+    layout_group.add_argument(
         "--group-by-schema",
         "-g",
         action="store_true",
         help="Group tables by schema in output",
     )
-    parser.add_argument(
+    layout_group.add_argument(
         "--no-schema-prefix",
         action="store_true",
         help="Don't prefix table names with schema",
     )
-    parser.add_argument(
+    layout_group.add_argument(
         "--title",
         type=str,
         help="Add a title to the diagram",
@@ -191,6 +250,14 @@ Output modes:
 
 def run(args: argparse.Namespace) -> int:
     """Run the conversion with parsed arguments."""
+    # Check for image export
+    export_image = args.svg or args.png or args.pdf
+
+    # Validate output for image export
+    if export_image and args.output == "-":
+        print("Error: Image export requires an output file (-o FILE).", file=sys.stderr)
+        return 1
+
     # Read input
     if args.input == "-":
         if sys.stdin.isatty():
@@ -243,13 +310,59 @@ def run(args: argparse.Namespace) -> int:
         title=args.title,
     )
 
-    # Render output
-    if args.format == "json":
+    # Render mermaid
+    if args.format == "json" and not export_image:
         output = render_json(db, options)
     else:
         output = render_mermaid(db, options)
 
-    # Write output
+    # Handle image export
+    if export_image:
+        from pg2mermaid.exporter import (
+            ExportError,
+            ExportFormat,
+            ExportMethod,
+            export_diagram,
+        )
+
+        # Determine export format
+        if args.svg:
+            export_fmt = ExportFormat.SVG
+        elif args.png:
+            export_fmt = ExportFormat.PNG
+        else:
+            export_fmt = ExportFormat.PDF
+
+        # Determine export method
+        method_map = {
+            "auto": ExportMethod.AUTO,
+            "local": ExportMethod.LOCAL,
+            "online": ExportMethod.ONLINE,
+        }
+        export_method = method_map[args.export_method]
+
+        if args.verbose:
+            print(f"Exporting as {export_fmt.value.upper()}...", file=sys.stderr)
+
+        try:
+            result_path = export_diagram(
+                mermaid_code=output,
+                output_path=args.output,
+                format=export_fmt,
+                method=export_method,
+                background=args.background,
+                theme=args.theme,
+                scale=args.scale,
+            )
+            if args.verbose:
+                print(f"Written to {result_path}", file=sys.stderr)
+        except ExportError as e:
+            print(f"Export error: {e}", file=sys.stderr)
+            return 1
+
+        return 0
+
+    # Write text output
     if args.output == "-":
         print(output)
     else:
