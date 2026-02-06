@@ -71,11 +71,14 @@ def export_diagram(
     if method == ExportMethod.AUTO:
         # Try local first, fall back to online
         if _mmdc_available():
-            return _export_local(
-                mermaid_code, output_path, format, background, theme, scale
-            )
-        else:
-            return _export_online(mermaid_code, output_path, format, timeout)
+            try:
+                return _export_local(
+                    mermaid_code, output_path, format, background, theme, scale
+                )
+            except ExportError:
+                # Local failed (e.g., missing Chrome for Puppeteer), try online
+                pass
+        return _export_online(mermaid_code, output_path, format, timeout)
     elif method == ExportMethod.LOCAL:
         if not _mmdc_available():
             raise ExportError(
