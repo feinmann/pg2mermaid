@@ -11,6 +11,9 @@ from pg2mermaid.models import Column, Database, ForeignKey, Table
 # Default schema when none specified
 DEFAULT_SCHEMA = "public"
 
+# Regex fragment for SQL referential actions (CASCADE, SET NULL, SET DEFAULT, RESTRICT, NO ACTION)
+_REF_ACTION = r"(?:CASCADE|RESTRICT|NO\s+ACTION|SET\s+NULL|SET\s+DEFAULT)"
+
 
 def parse_sql(sql: str) -> Database:
     """
@@ -36,23 +39,61 @@ def parse_sql(sql: str) -> Database:
 
 def _parse_create_tables(sql: str) -> Iterator[Table]:
     """Extract and parse all CREATE TABLE statements."""
-    # Pattern to match CREATE TABLE statements
-    # Handles: CREATE TABLE, CREATE TABLE IF NOT EXISTS, CREATE UNLOGGED TABLE
-    pattern = re.compile(
+    # Find the start of each CREATE TABLE statement, then use parenthesis
+    # tracking to find the body. This avoids issues with ); inside string literals.
+    start_pattern = re.compile(
         r"CREATE\s+(?:UNLOGGED\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
-        r"([^\s(]+)\s*\(\s*"
-        r"(.*?)"
-        r"\)\s*;",
-        re.IGNORECASE | re.DOTALL,
+        r"([^\s(]+)\s*\(",
+        re.IGNORECASE,
     )
 
-    for match in pattern.finditer(sql):
+    for match in start_pattern.finditer(sql):
         table_name = match.group(1)
-        body = match.group(2)
+        body_start = match.end()  # Position after the opening paren
+
+        # Find the matching closing paren using state tracking
+        body_end = _find_matching_paren(sql, body_start)
+        if body_end is None:
+            continue
+
+        body = sql[body_start:body_end]
 
         table = _parse_table(table_name, body)
         if table:
             yield table
+
+
+def _find_matching_paren(sql: str, start: int) -> int | None:
+    """Find the position of the matching closing parenthesis, handling string literals."""
+    depth = 1
+    in_string = False
+    string_char = ""
+    i = start
+
+    while i < len(sql):
+        char = sql[i]
+
+        if in_string:
+            if char == string_char:
+                # Check for doubled-quote escape ('' or "")
+                if i + 1 < len(sql) and sql[i + 1] == char:
+                    i += 2
+                    continue
+                in_string = False
+        else:
+            if char in ("'", '"'):
+                in_string = True
+                string_char = char
+            elif char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    return i
+
+        i += 1
+
+    return None
 
 
 def _parse_table(qualified_name: str, body: str) -> Table | None:
@@ -79,6 +120,10 @@ def _parse_table(qualified_name: str, body: str) -> Table | None:
             column = _parse_column(definition)
             if column:
                 table.add_column(column)
+                # Check for inline REFERENCES clause
+                fk = _extract_inline_foreign_key(definition, column.name)
+                if fk:
+                    table.add_foreign_key(fk)
 
     # Process table-level constraints
     for constraint in table_constraints:
@@ -119,12 +164,19 @@ def _split_definitions(body: str) -> list[str]:
     while i < len(body):
         char = body[i]
 
-        # Handle string literals
-        if char in ("'", '"') and (i == 0 or body[i - 1] != "\\"):
+        # Handle string literals (PostgreSQL uses '' for escaping, not \')
+        if char in ("'", '"'):
             if not in_string:
                 in_string = True
                 string_char = char
             elif char == string_char:
+                # Check for doubled-quote escape ('' or "")
+                if i + 1 < len(body) and body[i + 1] == char:
+                    current.append(char)
+                    i += 1
+                    current.append(body[i])
+                    i += 1
+                    continue
                 in_string = False
 
         if not in_string:
@@ -229,7 +281,6 @@ def _extract_type_and_constraints(rest: str) -> tuple[str, str]:
         "GENERATED",
     ]
 
-    upper = rest.upper()
     min_pos = len(rest)
 
     for keyword in constraint_keywords:
@@ -286,6 +337,8 @@ def _extract_default(constraints: str) -> str | None:
         r"|"
         r"\([^)]+\)"  # Expression in parentheses
         r"|"
+        r"[a-zA-Z_]\w*\([^)]*\)"  # Function call like now(), gen_random_uuid()
+        r"|"
         r"[^\s,)]+"  # Simple value
         r")",
         re.IGNORECASE,
@@ -294,6 +347,36 @@ def _extract_default(constraints: str) -> str | None:
     match = pattern.search(constraints)
     if match:
         return match.group(1)
+
+    return None
+
+
+def _extract_inline_foreign_key(definition: str, column_name: str) -> ForeignKey | None:
+    """Extract an inline REFERENCES clause from a column definition."""
+    pattern = re.compile(
+        r"REFERENCES\s+([^\s(]+)\s*\(([^)]+)\)"
+        rf"(?:\s+ON\s+DELETE\s+({_REF_ACTION}))?"
+        rf"(?:\s+ON\s+UPDATE\s+({_REF_ACTION}))?",
+        re.IGNORECASE,
+    )
+
+    match = pattern.search(definition)
+    if match:
+        ref_table = match.group(1).replace('"', "")
+        ref_columns = _parse_column_list(match.group(2))
+        on_delete = match.group(3)
+        on_update = match.group(4)
+
+        ref_schema, ref_name = _parse_qualified_name(ref_table)
+
+        return ForeignKey(
+            columns=[column_name],
+            ref_schema=ref_schema if ref_schema != DEFAULT_SCHEMA else None,
+            ref_table=ref_name,
+            ref_columns=ref_columns,
+            on_delete=on_delete,
+            on_update=on_update,
+        )
 
     return None
 
@@ -331,8 +414,8 @@ def _apply_foreign_key_constraint(table: Table, constraint: str) -> None:
         r"(?:CONSTRAINT\s+\"?(\w+)\"?\s+)?"
         r"FOREIGN\s+KEY\s*\(([^)]+)\)\s*"
         r"REFERENCES\s+([^\s(]+)\s*\(([^)]+)\)"
-        r"(?:\s+ON\s+DELETE\s+(\w+(?:\s+\w+)?))?"
-        r"(?:\s+ON\s+UPDATE\s+(\w+(?:\s+\w+)?))?",
+        rf"(?:\s+ON\s+DELETE\s+({_REF_ACTION}))?"
+        rf"(?:\s+ON\s+UPDATE\s+({_REF_ACTION}))?",
         re.IGNORECASE,
     )
 
@@ -409,8 +492,8 @@ def _parse_alter_tables(sql: str, db: Database) -> None:
         r"ADD\s+CONSTRAINT\s+\"?(\w+)\"?\s+"
         r"FOREIGN\s+KEY\s*\(([^)]+)\)\s*"
         r"REFERENCES\s+([^\s(]+)\s*\(([^)]+)\)"
-        r"(?:\s+ON\s+DELETE\s+(\w+(?:\s+\w+)?))?"
-        r"(?:\s+ON\s+UPDATE\s+(\w+(?:\s+\w+)?))?",
+        rf"(?:\s+ON\s+DELETE\s+({_REF_ACTION}))?"
+        rf"(?:\s+ON\s+UPDATE\s+({_REF_ACTION}))?",
         re.IGNORECASE,
     )
 

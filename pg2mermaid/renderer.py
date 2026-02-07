@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
+from typing import Any
 
 from pg2mermaid.models import Column, Database, ForeignKey, Table
 
@@ -299,7 +299,7 @@ def _collect_relationships(
 ) -> list[str]:
     """Collect all relationships between tables."""
     relationships: list[str] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
 
     # Build a set of table names we're showing
     shown_tables = {t.qualified_name for t in tables}
@@ -331,16 +331,17 @@ def _collect_relationships(
             else:
                 target_id = _sanitize_name(fk.ref_table)
 
-            # Avoid duplicate relationships
-            rel_key = (min(source_id, target_id), max(source_id, target_id))
-            if rel_key in seen:
-                continue
-            seen.add(rel_key)
-
             # Build relationship string
             # For now, assume one-to-many (most common)
             # target ||--o{ source : "fk_name"
             label = fk.columns[0] if len(fk.columns) == 1 else ",".join(fk.columns)
+
+            # Avoid duplicate relationships (include label to allow multiple FKs between same tables)
+            rel_key = (source_id, target_id, label)
+            if rel_key in seen:
+                continue
+            seen.add(rel_key)
+
             relationships.append(f'{target_id} ||--o{{ {source_id} : "{label}"')
 
     return relationships
@@ -364,7 +365,7 @@ def render_json(db: Database, options: RenderOptions | None = None) -> str:
 
     tables = list(_filter_tables(db, options))
 
-    result = {
+    result: dict[str, Any] = {
         "schemas": {},
         "relationships": [],
     }
