@@ -38,7 +38,7 @@ class ExportError(Exception):
 def export_diagram(
     mermaid_code: str,
     output_path: str | Path,
-    format: ExportFormat = ExportFormat.SVG,
+    export_format: ExportFormat = ExportFormat.SVG,
     method: ExportMethod = ExportMethod.AUTO,
     background: str = "white",
     theme: str = "default",
@@ -51,7 +51,7 @@ def export_diagram(
     Args:
         mermaid_code: The Mermaid diagram code.
         output_path: Path to save the output file.
-        format: Output format (SVG, PNG, PDF).
+        export_format: Output format (SVG, PNG, PDF).
         method: Export method (AUTO, LOCAL, ONLINE).
         background: Background color (for PNG).
         theme: Mermaid theme (default, dark, forest, neutral).
@@ -68,29 +68,29 @@ def export_diagram(
 
     # Ensure correct extension
     if not output_path.suffix:
-        output_path = output_path.with_suffix(f".{format.value}")
+        output_path = output_path.with_suffix(f".{export_format.value}")
 
     if method == ExportMethod.AUTO:
         # Try local first, fall back to online
         if _mmdc_available():
             try:
                 return _export_local(
-                    mermaid_code, output_path, format, background, theme, scale
+                    mermaid_code, output_path, export_format, background, theme, scale
                 )
             except ExportError:
                 # Local failed (e.g., missing Chrome for Puppeteer), try online
                 pass
-        return _export_online(mermaid_code, output_path, format, timeout, background)
+        return _export_online(mermaid_code, output_path, export_format, timeout, background)
     elif method == ExportMethod.LOCAL:
         if not _mmdc_available():
             raise ExportError(
                 "mermaid-cli (mmdc) not found. Install with: npm install -g @mermaid-js/mermaid-cli"
             )
         return _export_local(
-            mermaid_code, output_path, format, background, theme, scale
+            mermaid_code, output_path, export_format, background, theme, scale
         )
     else:  # ONLINE
-        return _export_online(mermaid_code, output_path, format, timeout, background)
+        return _export_online(mermaid_code, output_path, export_format, timeout, background)
 
 
 def _mmdc_available() -> bool:
@@ -101,7 +101,7 @@ def _mmdc_available() -> bool:
 def _export_local(
     mermaid_code: str,
     output_path: Path,
-    format: ExportFormat,
+    export_format: ExportFormat,
     background: str,
     theme: str,
     scale: int,
@@ -126,7 +126,7 @@ def _export_local(
             theme,
         ]
 
-        if format == ExportFormat.PNG:
+        if export_format == ExportFormat.PNG:
             cmd.extend(["-s", str(scale)])
 
         result = subprocess.run(
@@ -188,32 +188,39 @@ def _add_background_to_png(png_path: Path, background: str) -> None:
 def _export_online(
     mermaid_code: str,
     output_path: Path,
-    format: ExportFormat,
+    export_format: ExportFormat,
     timeout: int,
     background: str = "white",
 ) -> Path:
     """Export using kroki.io API."""
-    url = f"https://kroki.io/mermaid/{format.value}"
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        pkg_version = version("pg2mermaid")
+    except PackageNotFoundError:
+        pkg_version = "0.1.0"
+
+    url = f"https://kroki.io/mermaid/{export_format.value}"
 
     try:
         # Use POST with plain text body
         data = mermaid_code.encode("utf-8")
         request = Request(url, data=data, method="POST")
         request.add_header("Content-Type", "text/plain")
-        request.add_header("Accept", f"image/{format.value}")
-        request.add_header("User-Agent", "pg2mermaid/0.1.0")
+        request.add_header("Accept", f"image/{export_format.value}")
+        request.add_header("User-Agent", f"pg2mermaid/{pkg_version}")
 
         with urlopen(request, timeout=timeout) as response:
             content = response.read()
 
         # For SVG, add background rectangle
-        if format == ExportFormat.SVG:
+        if export_format == ExportFormat.SVG:
             content = _add_background_to_svg(content, background)
 
         output_path.write_bytes(content)
 
         # For PNG, add background using ImageMagick (if available)
-        if format == ExportFormat.PNG:
+        if export_format == ExportFormat.PNG:
             _add_background_to_png(output_path, background)
 
         return output_path
@@ -249,7 +256,7 @@ def _add_background_to_svg(svg_content: bytes, background: str) -> bytes:
     """Add a background rectangle to an SVG."""
     svg_str = svg_content.decode("utf-8")
 
-    # Parse viewBox or width/height to get dimensions
+    # Determine dimensions from viewBox or width/height attributes
     viewbox_match = re.search(r'viewBox="([^"]+)"', svg_str)
     width_match = re.search(r'width="([^"]+)"', svg_str)
     height_match = re.search(r'height="([^"]+)"', svg_str)
@@ -259,23 +266,23 @@ def _add_background_to_svg(svg_content: bytes, background: str) -> bytes:
         if len(parts) == 4:
             x, y, w, h = parts
             bg_rect = f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{background}"/>'
+        else:
+            bg_rect = f'<rect x="0" y="0" width="100%" height="100%" fill="{background}"/>'
     elif width_match and height_match:
         w = width_match.group(1)
         h = height_match.group(1)
         bg_rect = f'<rect x="0" y="0" width="{w}" height="{h}" fill="{background}"/>'
     else:
-        # Fallback: large rectangle
         bg_rect = f'<rect x="0" y="0" width="100%" height="100%" fill="{background}"/>'
 
-    # Insert background rect right after the opening <svg> tag (and any <style> or <defs>)
-    # Find the first <g> tag and insert before it
-    g_match = re.search(r"(<g[^>]*>)", svg_str)
-    if g_match:
-        insert_pos = g_match.start()
+    # Insert background rect right after the opening <svg ...> tag.
+    # This is more robust than searching for <g> tags, which may vary by generator.
+    svg_open = re.search(r"<svg[^>]*>", svg_str)
+    if svg_open:
+        insert_pos = svg_open.end()
         svg_str = svg_str[:insert_pos] + bg_rect + svg_str[insert_pos:]
     else:
-        # Fallback: insert after <svg ...>
-        svg_tag_end = svg_str.find(">") + 1
-        svg_str = svg_str[:svg_tag_end] + bg_rect + svg_str[svg_tag_end:]
+        # Should not happen with valid SVG, but handle gracefully
+        svg_str = bg_rect + svg_str
 
     return svg_str.encode("utf-8")

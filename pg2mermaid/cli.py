@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from pg2mermaid import __version__
 from pg2mermaid.parser import parse_sql
 from pg2mermaid.renderer import (
     OutputFormat,
@@ -242,7 +243,7 @@ Export methods:
     parser.add_argument(
         "--version",
         action="version",
-        version="%(prog)s 0.1.0",
+        version=f"%(prog)s {__version__}",
     )
 
     return parser
@@ -348,7 +349,7 @@ def run(args: argparse.Namespace) -> int:
             result_path = export_diagram(
                 mermaid_code=output,
                 output_path=args.output,
-                format=export_fmt,
+                export_format=export_fmt,
                 method=export_method,
                 background=args.background,
                 theme=args.theme,
