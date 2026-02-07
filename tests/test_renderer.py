@@ -1,5 +1,6 @@
 """Tests for the Mermaid renderer."""
 
+from pg2mermaid.models import Database
 from pg2mermaid.parser import parse_sql
 from pg2mermaid.renderer import (
     OutputFormat,
@@ -10,7 +11,7 @@ from pg2mermaid.renderer import (
 )
 
 
-def _simple_db():
+def _simple_db() -> Database:
     """Create a simple test database."""
     sql = """
     CREATE TABLE users (
@@ -155,7 +156,7 @@ class TestOutputFormats:
 class TestFiltering:
     """Test schema and table filtering."""
 
-    def _multi_schema_db(self):
+    def _multi_schema_db(self) -> Database:
         sql = """
         CREATE TABLE public.users (id serial PRIMARY KEY);
         CREATE TABLE public.posts (id serial PRIMARY KEY);

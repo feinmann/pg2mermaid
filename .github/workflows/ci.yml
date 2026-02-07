@@ -28,4 +28,4 @@ jobs:
         run: pytest tests/ -v
 
       - name: Type check
-        run: mypy pg2mermaid/
+        run: mypy pg2mermaid/ tests/
