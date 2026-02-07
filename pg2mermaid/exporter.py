@@ -143,6 +143,12 @@ def _export_local(
         if not output_path.exists():
             raise ExportError(f"Output file was not created: {output_path}")
 
+        # Convert foreignObject text to native SVG text for non-browser viewers
+        if export_format == ExportFormat.SVG:
+            svg_content = output_path.read_bytes()
+            svg_content = _convert_foreignobjects_to_text(svg_content)
+            output_path.write_bytes(svg_content)
+
         return output_path
 
     except subprocess.TimeoutExpired:
@@ -213,8 +219,9 @@ def _export_online(
         with urlopen(request, timeout=timeout) as response:
             content = response.read()
 
-        # For SVG, add background rectangle
+        # For SVG, convert foreignObject text and add background rectangle
         if export_format == ExportFormat.SVG:
+            content = _convert_foreignobjects_to_text(content)
             content = _add_background_to_svg(content, background)
 
         output_path.write_bytes(content)
@@ -250,6 +257,73 @@ def check_dependencies() -> dict[str, bool]:
         "mmdc (mermaid-cli)": _mmdc_available(),
         "kroki.io (online)": True,  # Always available if internet works
     }
+
+
+def _convert_foreignobjects_to_text(svg_content: bytes) -> bytes:
+    """Convert <foreignObject> elements to native SVG <text> for compatibility.
+
+    Mermaid.js renders text using HTML embedded in <foreignObject>, which works
+    in browsers but not in native SVG viewers like Eye of GNOME (librsvg),
+    Inkscape, or other non-browser renderers. This post-processes the SVG to
+    replace those elements with native SVG <text> elements.
+    """
+    svg_str = svg_content.decode("utf-8")
+
+    fo_pattern = re.compile(
+        r'<foreignObject\s+width="([^"]*?)"\s+height="([^"]*?)">'
+        r'<div\s+xmlns="http://www\.w3\.org/1999/xhtml"[^>]*?'
+        r'text-align:\s*(start|center)[^>]*?>'
+        r'<span\s+class="(nodeLabel|edgeLabel)">'
+        r'(?:<p>(.*?)</p>)?'
+        r'</span></div></foreignObject>',
+        re.DOTALL,
+    )
+
+    font_family = "&quot;trebuchet ms&quot;, verdana, arial, sans-serif"
+
+    def _replace_fo(match: re.Match) -> str:
+        width_str = match.group(1)
+        height_str = match.group(2)
+        text_align = match.group(3)
+        label_class = match.group(4)
+        text = match.group(5) or ""
+
+        w = float(width_str) if width_str else 0
+        h = float(height_str) if height_str else 0
+
+        # Skip empty labels
+        if not text.strip() or (w == 0 and h == 0):
+            return ""
+
+        # Font properties: edge labels use smaller font and different color
+        if label_class == "edgeLabel":
+            font_size = 14
+            fill = "#9370DB"
+        else:
+            font_size = 16
+            fill = "#333"
+
+        # y = font_size approximates the baseline position for vertically
+        # centered text (line-height 1.5 in a box of font_size * 1.5).
+        y = font_size
+
+        if text_align == "center":
+            x = w / 2
+            anchor = ' text-anchor="middle"'
+        else:
+            x = 0
+            anchor = ""
+
+        return (
+            f'<text x="{x}" y="{y}" '
+            f'font-family="{font_family}" '
+            f'font-size="{font_size}px" '
+            f'fill="{fill}"{anchor}>'
+            f"{text}</text>"
+        )
+
+    svg_str = fo_pattern.sub(_replace_fo, svg_str)
+    return svg_str.encode("utf-8")
 
 
 def _add_background_to_svg(svg_content: bytes, background: str) -> bytes:
