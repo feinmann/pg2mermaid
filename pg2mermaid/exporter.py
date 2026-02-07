@@ -257,9 +257,9 @@ def _add_background_to_svg(svg_content: bytes, background: str) -> bytes:
     svg_str = svg_content.decode("utf-8")
 
     # Determine dimensions from viewBox or width/height attributes
-    viewbox_match = re.search(r'viewBox="([^"]+)"', svg_str)
-    width_match = re.search(r'width="([^"]+)"', svg_str)
-    height_match = re.search(r'height="([^"]+)"', svg_str)
+    viewbox_match: re.Match[str] | None = re.search(r'viewBox="([^"]+)"', svg_str)
+    width_match: re.Match[str] | None = re.search(r'width="([^"]+)"', svg_str)
+    height_match: re.Match[str] | None = re.search(r'height="([^"]+)"', svg_str)
 
     if viewbox_match:
         parts = viewbox_match.group(1).split()
@@ -277,7 +277,7 @@ def _add_background_to_svg(svg_content: bytes, background: str) -> bytes:
 
     # Insert background rect right after the opening <svg ...> tag.
     # This is more robust than searching for <g> tags, which may vary by generator.
-    svg_open = re.search(r"<svg[^>]*>", svg_str)
+    svg_open: re.Match[str] | None = re.search(r"<svg[^>]*>", svg_str)
     if svg_open:
         insert_pos = svg_open.end()
         svg_str = svg_str[:insert_pos] + bg_rect + svg_str[insert_pos:]
